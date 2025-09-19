@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  
+  <title>Best-Effort 3D Viewer (Encrypted)</title>
+  <style>
+    html, body { height: 100%; margin:0; background:#0b0e11; color:#eaeaea; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    #app { display:flex; flex-direction:column; height:100%; }
+    header { padding:10px 14px; border-bottom:1px solid #222; display:flex; gap:12px; align-items:center; }
+    main { flex:1; position:relative; }
+    canvas { display:block; width:100%; height:100%; }
+    .bar { display:flex; gap:8px; align-items:center; }
+    button { background:#1f2937; color:#e5e7eb; border:1px solid #374151; padding:8px 12px; border-radius:8px; cursor:pointer; }
+    input[type=text] { background:#0f172a; color:#e5e7eb; border:1px solid #334155; padding:8px; border-radius:8px; min-width:240px; }
+    small.hint { opacity:0.7 }
+    
+  </style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="bar">
+      <button id="btnSession">Create Session</button>
+      <span id="status">No session</span>
+    </div>
+    <div class="bar">
+      <input id="modelName" type="text" value="Dau_du.glb" />
+      <button id="btnLoad">Load Encrypted Model</button>
+    </div>
+    <div id="modelNav" style="display:flex; gap:8px; align-items:center; margin-top:8px;">
+  <button id="btnPrev">◀ Prev</button>
+  <select id="modelList" style="min-width:220px;"></select>
+  <button id="btnNext">Next ▶</button>
+    </div>
+
+    <div class="bar"><small class="hint">Demo only — replace with ECDH handshake & real auth in production.</small></div>
+  </header>
+  <main>
+    <canvas id="view"></canvas>
+  </main>
+</div>
+
+<!-- map 'three' -> đúng URL module -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.159.0/build/three.module.js"
+  }
+}
+</script>
+
+
+<script type="module">
+  import * as THREE from 'https://unpkg.com/three@0.159.0/build/three.module.js';
+import { GLTFLoader } from 'https://unpkg.com/three@0.159.0/examples/jsm/loaders/GLTFLoader.js';
+import { OrbitControls } from 'https://unpkg.com/three@0.159.0/examples/jsm/controls/OrbitControls.js';
+
+
+
+  function fitViewToObject(camera, controls, object, renderer) {
+  // Tính bounding box + bounding sphere
+  const box = new THREE.Box3().setFromObject(object);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const radius = Math.max(size.x, size.y, size.z) * 0.5;
+
+  // Đặt target ở tâm
+  if (controls) {
+    controls.target.copy(center);
+    controls.update();
+  }
+
+  // Tính khoảng cách camera phù hợp theo FOV
+  const fov = THREE.MathUtils.degToRad(camera.fov);
+  const dist = radius / Math.sin(fov / 2); // an toàn hơn: / Math.tan(fov/2) * 1.2
+
+  // Dời camera ra trục Z (hoặc theo vector từ camera->center hiện tại)
+  const dir = new THREE.Vector3()
+    .subVectors(camera.position, controls ? controls.target : center)
+    .normalize();
+  if (!isFinite(dir.length()) || dir.length() === 0) dir.set(0,0,1);
+
+  camera.position.copy(center).add(dir.multiplyScalar(dist * 1.2));
+
+  // Cập nhật near/far để tránh clipping
+  camera.near = Math.max( dist * 0.001, 0.01 );
+  camera.far  = dist * 10;
+  camera.updateProjectionMatrix();
+
+  // Đảm bảo renderer vẽ xong khung đầu
+  if (renderer) renderer.render( scene, camera );
+}
+
+  
+  const canvas = document.getElementById('view');
+  const btnSession = document.getElementById('btnSession');
+  const btnLoad = document.getElementById('btnLoad');
+  const nameInput = document.getElementById('modelName');
+  const statusEl = document.getElementById('status');
+ 
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0b0e11);
+  const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 500);
+  camera.position.set(0,1.2,3);
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+  renderer.setClearColor(0x1f1f1f); renderer.outputColorSpace = THREE.SRGBColorSpace;
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.8); hemi.position.set(0, 1, 0); scene.add(hemi);
+  const dir = new THREE.DirectionalLight(0xffffff, 0.6); dir.position.set(3, 5, 2); scene.add(dir);
+
+    // Renderer “sáng” hơn
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0; // 1.0–1.6 tùy mắt
+
+  // Đèn & môi trường
+  hemi.intensity = 1.0;            // trước đây 0.8
+  dir.intensity  = 1.2;            // trước đây 0.6
+
+  // (khuyến nghị) môi trường studio nhẹ
+  import { RoomEnvironment } from 'https://unpkg.com/three@0.159.0/examples/jsm/environments/RoomEnvironment.js';
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  // (giữ background tối để nổi khối)
+  scene.background = new THREE.Color(0x1f1f1f);
+
+  // (tùy chọn) ép vật liệu sáng hơn nếu model không có texture/PBR
+  function brightenMaterials(root) {
+    root.traverse(o => {
+      if (o.isMesh) {
+        if (o.material && 'metalness' in o.material) {
+          o.material.metalness = 0.0;        // bớt “đen”
+          o.material.roughness = 0.5;        // mịn vừa
+          o.material.envMapIntensity = 1.0;  // hưởng môi trường
+          o.material.needsUpdate = true;
+        }
+        // bảo hiểm nếu model có mặt úp
+        o.material.side = THREE.DoubleSide;
+      }
+    });
+  }
+
+
+// OrbitControls
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+
+// animate loop
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+  function resize(){ const h = window.innerHeight-56; renderer.setSize(window.innerWidth,h); camera.aspect=window.innerWidth/h; camera.updateProjectionMatrix(); }
+  window.addEventListener('resize', resize); resize();
+  (function loop(){ requestAnimationFrame(loop); renderer.render(scene,camera); })();
+
+  const API = 'http://localhost:4000';
+  let token = null;
+  const DEFAULT_MODEL = 'Dau_du.glb';
+   nameInput.value = DEFAULT_MODEL;
+
+  window.addEventListener('DOMContentLoaded', async () => {
+    try {
+  await btnSession.onclick(); // tạo session
+  await btnLoad.onclick();    // tải model đã mã hoá
+   } catch (e) { console.error(e); }
+});
+  btnSession.onclick = async () => {
+    const r = await fetch(API + '/api/session', { method:'POST' });
+    const j = await r.json();
+    token = j.token;
+    statusEl.textContent = 'Session OK (expires ' + new Date(j.exp*1000).toLocaleTimeString() + ')';
+  };
+
+  async function loadEncrypted(name){
+  if (!token) { alert('Create session first'); return; }
+
+  // 1) Lấy manifest (chứa ivs, kích thước…)
+  const man = await (await fetch(API + '/api/model/enc/' + encodeURIComponent(name), {
+    headers: { Authorization: 'Bearer ' + token }
+  })).json();
+
+  // 2) Import đúng KHÓA DEMO (TRÙNG với server\keys\demo_key.bin)
+  const DEMO_KEY_B64 = 'y8Hj3k5Lw2m2QkYbJ2W8nQ7a1o6fU1J0YdR8n2nQ8yI=';
+  const DEMO_KEY_RAW = Uint8Array.from(atob(DEMO_KEY_B64), c => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey('raw', DEMO_KEY_RAW, 'AES-GCM', false, ['decrypt']);
+
+  // 3) Tải & giải mã từng chunk
+  const parts = [];
+  for (let i = 0; i < man.ivs.length; i++) {
+    const resp = await fetch(API + '/api/model/enc/' + encodeURIComponent(name) + '/chunk/' + i, {
+      headers: { Authorization: 'Bearer ' + token }
+    });
+    const buf = new Uint8Array(await resp.arrayBuffer());   // ciphertext || tag (đã kèm tag 16B ở cuối)
+    const iv  = Uint8Array.from(atob(man.ivs[i]), c => c.charCodeAt(0));
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, buf);
+    parts.push(new Uint8Array(plain));
+  }
+
+  // 4) Ghép & parse GLB
+  const total = parts.reduce((s,b)=>s+b.length, 0);
+  const all = new Uint8Array(total);
+  let off = 0; for (const p of parts){ all.set(p, off); off += p.length; }
+
+  const loader = new GLTFLoader();
+  loader.parse(all.buffer, '', (gltf)=>{
+    // clear scene trừ đèn
+    [...scene.children].forEach(ch => { if (ch !== hemi && ch !== dir) scene.remove(ch); });
+    scene.add(gltf.scene);
+
+      fitViewToObject(camera, controls, gltf.scene, renderer);
+  }, (err)=>{ console.error(err); alert('Failed to parse GLB'); });
+}
+
+
+  btnLoad.onclick = async ()=>{ await loadEncrypted(nameInput.value.trim()); };
+
+  const params = new URLSearchParams(location.search);
+  if (params.get('model')) nameInput.value = params.get('model');
+  (async ()=>{ if (params.get('auto')==='1'){ await btnSession.onclick(); await btnLoad.onclick(); } })();
+</script>
+
+</body>
+</html>
