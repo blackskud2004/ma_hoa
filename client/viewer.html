@@ -3,20 +3,27 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  
   <title>Best-Effort 3D Viewer (Encrypted)</title>
   <style>
-    html, body { height: 100%; margin:0; background:#0b0e11; color:#eaeaea; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-    #app { display:flex; flex-direction:column; height:100%; }
-    header { padding:10px 14px; border-bottom:1px solid #222; display:flex; gap:12px; align-items:center; }
-    main { flex:1; position:relative; }
-    canvas { display:block; width:100%; height:100%; }
-    .bar { display:flex; gap:8px; align-items:center; }
-    button { background:#1f2937; color:#e5e7eb; border:1px solid #374151; padding:8px 12px; border-radius:8px; cursor:pointer; }
-    input[type=text] { background:#0f172a; color:#e5e7eb; border:1px solid #334155; padding:8px; border-radius:8px; min-width:240px; }
-    small.hint { opacity:0.7 }
-    
+    html,body{height:100%;margin:0;background:#0b0e11;color:#eaeaea;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+    #app{display:flex;flex-direction:column;height:100%}
+    header{padding:10px 14px;border-bottom:1px solid #222;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    main{flex:1;position:relative}
+    canvas{display:block;width:100%;height:100%}
+    .bar{display:flex;gap:8px;align-items:center}
+    button{background:#1f2937;color:#e5e7eb;border:1px solid #374151;padding:8px 12px;border-radius:8px;cursor:pointer}
+    input[type=text],select{background:#0f172a;color:#e5e7eb;border:1px solid #334155;padding:8px;border-radius:8px;min-width:220px}
+    small.hint{opacity:.7}
   </style>
+
+  <!-- Import map: ánh xạ 'three' => URL ESM hợp lệ -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.159.0/build/three.module.js"
+    }
+  }
+  </script>
 </head>
 <body>
 <div id="app">
@@ -25,335 +32,286 @@
       <button id="btnSession">Create Session</button>
       <span id="status">No session</span>
     </div>
+
     <div class="bar">
       <input id="modelName" type="text" value="Dau_du.glb" />
       <button id="btnLoad">Load Encrypted Model</button>
     </div>
-    <div id="modelNav" style="display:flex; gap:8px; align-items:center; margin-top:8px;">
-  <button id="btnPrev">◀ Prev</button>
-  <select id="modelList" style="min-width:220px;"></select>
-  <button id="btnNext">Next ▶</button>
+
+    <div class="bar">
+      <button id="btnPrev">◀ Prev</button>
+      <select id="modelList"></select>
+      <button id="btnNext">Next ▶</button>
     </div>
 
-    <div class="bar"><small class="hint">Demo only — replace with ECDH handshake & real auth in production.</small></div>
+    <div class="bar">
+      <small class="hint">Demo only — replace with ECDH handshake & real auth in production.</small>
+    </div>
   </header>
-  <main>
-    <canvas id="view"></canvas>
-  </main>
+
+  <main><canvas id="view"></canvas></main>
 </div>
 
-<!-- map 'three' -> đúng URL module -->
-<script type="importmap">
-{
-  "imports": {
-    "three": "https://unpkg.com/three@0.159.0/build/three.module.js"
-  }
-}
-</script>
-
-
+<!-- Toàn bộ logic ở dạng ES Module -->
 <script type="module">
-  /* ===== Imports ESM qua CDN ===== */
-  import * as THREE from 'https://unpkg.com/three@0.159.0/build/three.module.js';
+  /* ===== ESM imports ===== */
+  import * as THREE from 'three';
   import { GLTFLoader } from 'https://unpkg.com/three@0.159.0/examples/jsm/loaders/GLTFLoader.js';
   import { OrbitControls } from 'https://unpkg.com/three@0.159.0/examples/jsm/controls/OrbitControls.js';
   import { RoomEnvironment } from 'https://unpkg.com/three@0.159.0/examples/jsm/environments/RoomEnvironment.js';
 
+  /* ===== Helpers: base64-url & hex ===== */
+  function b64ToBytes(b64){
+    if(typeof b64!=='string') throw new Error('b64ToBytes: input is not string');
+    b64=b64.replace(/-/g,'+').replace(/_/g,'/');
+    while(b64.length%4) b64+='=';
+    const bin=atob(b64), out=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) out[i]=bin.charCodeAt(i);
+    return out;
+  }
+  function hexToBytes(hex){
+    if(typeof hex!=='string') throw new Error('hexToBytes: input is not string');
+    hex=hex.replace(/^0x/i,''); if(hex.length%2) hex='0'+hex;
+    const out=new Uint8Array(hex.length/2);
+    for(let i=0;i<out.length;i++) out[i]=parseInt(hex.slice(i*2,i*2+2),16);
+    return out;
+  }
 
-  // Base64 chuẩn hoá: hỗ trợ cả base64-url và tự thêm padding
-function b64ToBytes(b64) {
-  if (typeof b64 !== 'string') throw new Error('b64ToBytes: input is not string');
-  b64 = b64.replace(/-/g, '+').replace(/_/g, '/');
-  while (b64.length % 4) b64 += '=';
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-function hexToBytes(hex) {
-  if (typeof hex !== 'string') throw new Error('hexToBytes: input is not string');
-  hex = hex.replace(/^0x/i, '');
-  if (hex.length % 2) hex = '0' + hex;
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  return out;
-}
-
-
-  /* ===== Cấu hình API (nhớ sửa nếu bạn đổi cổng) ===== */
+  /* ===== Cấu hình API ===== */
   const API = 'http://127.0.0.1:4000';
 
   /* ===== Tham chiếu UI ===== */
   const btnSession = document.getElementById('btnSession');
   const statusEl   = document.getElementById('status');
-  const nameInput  = document.getElementById('modelName');  // ô text
+  const nameInput  = document.getElementById('modelName');
   const btnLoad    = document.getElementById('btnLoad');
   const btnPrev    = document.getElementById('btnPrev');
   const btnNext    = document.getElementById('btnNext');
   const sel        = document.getElementById('modelList');
   const canvas     = document.getElementById('view');
 
-  /* ===== Trạng thái điều hướng ===== */
+  /* ===== State ===== */
   let token = null;
-  let modelNames = [];      // ['Dau_du.glb', 'voi.glb', ...]
+  let SESSION_KEY_BYTES = null;
+  let modelNames = [];
   let currentIdx = -1;
 
-  function updateNavUI() {
-    btnPrev.disabled = (currentIdx <= 0);
-    btnNext.disabled = (currentIdx < 0 || currentIdx >= modelNames.length - 1);
-    if (currentIdx >= 0 && currentIdx < sel.options.length) sel.selectedIndex = currentIdx;
+  function updateNavUI(){
+    btnPrev.disabled = (currentIdx<=0);
+    btnNext.disabled = (currentIdx<0 || currentIdx>=modelNames.length-1);
+    if(currentIdx>=0 && currentIdx<sel.options.length) sel.selectedIndex=currentIdx;
   }
 
-  async function refreshModelList() {
-    if (!token) return;
-    const r = await fetch(`${API}/api/models`, { headers: { Authorization: `Bearer ${token}` }});
-    if (!r.ok) throw new Error('Cannot load /api/models: ' + r.status);
+  async function refreshModelList(){
+    if(!token) return;
+    const r = await fetch(`${API}/api/models`, {headers:{Authorization:`Bearer ${token}` }});
+    if(!r.ok) { console.error('/api/models', r.status); return; }
     modelNames = await r.json();
-
-    // Đổ danh sách vào <select>
     sel.innerHTML = '';
-    for (const name of modelNames) {
-      const opt = document.createElement('option');
-      opt.value = name; opt.textContent = name;
-      sel.appendChild(opt);
+    for(const n of modelNames){
+      const opt=document.createElement('option'); opt.value=n; opt.textContent=n; sel.appendChild(opt);
     }
-
-    // cố gắng chọn theo ô text, nếu không thì chọn mục 0
-    const wanted = (nameInput?.value || '').trim();
-    const idx = modelNames.findIndex(n => n === wanted);
-    currentIdx = (idx >= 0 ? idx : (modelNames.length ? 0 : -1));
+    const want=(nameInput?.value||'').trim();
+    const idx=modelNames.findIndex(n=>n===want);
+    currentIdx = idx>=0 ? idx : (modelNames.length?0:-1);
     updateNavUI();
   }
 
-  async function goTo(index) {
-    if (index < 0 || index >= modelNames.length) return;
-    currentIdx = index;
-    const name = modelNames[currentIdx];
-    if (nameInput) nameInput.value = name; // đồng bộ ô text
+  async function goTo(index){
+    if(index<0 || index>=modelNames.length) return;
+    currentIdx=index;
+    const name=modelNames[currentIdx];
+    if(nameInput) nameInput.value=name;
     updateNavUI();
     await loadEncrypted(name);
   }
 
-  /* ===== Three.js cơ bản ===== */
-  const renderer = new THREE.WebGLRenderer({ antialias: true, canvas });
+  /* ===== Three.js scene ===== */
+  const renderer = new THREE.WebGLRenderer({ antialias:true, canvas });
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
-  renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.setClearColor(0x1f1f1f);
 
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(50, canvas.clientWidth / canvas.clientHeight, 0.1, 1000);
-  camera.position.set(0.5, 0.5, 1.2);
+  const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
+  camera.position.set(0.5,0.5,1.2);
 
+  function resize(){
+    const w=canvas.clientWidth||canvas.parentElement.clientWidth;
+    const h=canvas.clientHeight||canvas.parentElement.clientHeight;
+    renderer.setSize(w,h,false);
+    camera.aspect=w/h; camera.updateProjectionMatrix();
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // môi trường + đèn + controls
   const env = new RoomEnvironment();
   const pmrem = new THREE.PMREMGenerator(renderer);
   scene.environment = pmrem.fromScene(env).texture;
 
-  const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.9);
-  hemi.position.set(0, 1, 0);
-  scene.add(hemi);
-  const dir = new THREE.DirectionalLight(0xffffff, 0.9);
-  dir.position.set(2, 3, 2);
-  scene.add(dir);
+  const hemi = new THREE.HemisphereLight(0xffffff,0x444444,0.9); hemi.position.set(0,1,0); scene.add(hemi);
+  const dir  = new THREE.DirectionalLight(0xffffff,0.9); dir.position.set(2,3,2); scene.add(dir);
 
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
 
-  window.addEventListener('resize', () => {
-    const w = canvas.clientWidth, h = canvas.clientHeight;
-    renderer.setSize(w, h, false);
-    camera.aspect = w / h; camera.updateProjectionMatrix();
-  });
-
-  let currentObject = null;
+  let currentObject=null;
   const loader = new GLTFLoader();
 
-  function clearObject() {
-    if (currentObject) {
-      scene.remove(currentObject);
-      currentObject.traverse?.(o => {
-        if (o.geometry) o.geometry.dispose();
-        if (o.material) {
-          if (Array.isArray(o.material)) o.material.forEach(m => m.dispose());
-          else o.material.dispose();
-        }
-      });
-      currentObject = null;
+  function clearObject(){
+    if(!currentObject) return;
+    scene.remove(currentObject);
+    currentObject.traverse?.(o=>{
+      if(o.geometry) o.geometry.dispose();
+      if(o.material){
+        if(Array.isArray(o.material)) o.material.forEach(m=>m.dispose());
+        else o.material.dispose();
+      }
+    });
+    currentObject=null;
+  }
+
+  function fitCameraToObject(obj){
+    const box=new THREE.Box3().setFromObject(obj);
+    const size=new THREE.Vector3(); box.getSize(size);
+    const center=new THREE.Vector3(); box.getCenter(center);
+    const maxDim=Math.max(size.x,size.y,size.z);
+    const fov=camera.fov*(Math.PI/180);
+    let dist=(maxDim/2)/Math.tan(fov/2); dist*=1.4;
+    const camDir=new THREE.Vector3(1,0.7,1).normalize();
+    camera.position.copy(center.clone().add(camDir.multiplyScalar(dist)));
+    camera.near=dist/50; camera.far=dist*50; camera.updateProjectionMatrix();
+    controls.target.copy(center); controls.update();
+  }
+
+  /* ===== Giải mã → Blob (AES-GCM, từng chunk) ===== */
+  async function decryptToBlob(name){
+    // 1) manifest
+    const manRes = await fetch(`${API}/api/model/enc/${encodeURIComponent(name)}`, {
+      headers:{Authorization:`Bearer ${token}`}
+    });
+    if(!manRes.ok) throw new Error(`manifest ${manRes.status}`);
+    const manifest = await manRes.json();
+
+    // 2) key (ưu tiên khoá phiên)
+    let keyBytes = SESSION_KEY_BYTES;
+    if(!keyBytes){
+      if(manifest.keyB64) keyBytes = b64ToBytes(manifest.keyB64);
+      else if(manifest.key) keyBytes = b64ToBytes(manifest.key);
+      else if(manifest.keyHex) keyBytes = hexToBytes(manifest.keyHex);
     }
-  }
+    if(!keyBytes) throw new Error('Missing AES key (no session key nor manifest.keyB64/keyHex)');
 
-  function fitCameraToObject(obj) {
-    const box = new THREE.Box3().setFromObject(obj);
-    const size = new THREE.Vector3(); box.getSize(size);
-    const center = new THREE.Vector3(); box.getCenter(center);
+    const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, {name:'AES-GCM'}, false, ['decrypt']);
 
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const fov = camera.fov * (Math.PI / 180);
-    let dist = (maxDim / 2) / Math.tan(fov / 2);
-    dist *= 1.4;
+    // 3) IVs + tham số
+    if(!Array.isArray(manifest.ivs) || !manifest.ivs.length) throw new Error('Manifest ivs[] missing');
+    const ivs = manifest.ivs.map(s=>b64ToBytes(s));
+    const totalSize = manifest.size|0;
 
-    const dir = new THREE.Vector3(1, 0.7, 1).normalize();
-    camera.position.copy(center.clone().add(dir.multiplyScalar(dist)));
-    camera.near = dist / 50;
-    camera.far = dist * 50;
-    camera.updateProjectionMatrix();
-    controls.target.copy(center);
-    controls.update();
-  }
-
-  async function decryptToBlob(name) {
-   // (1) Lấy manifest
-const manRes = await fetch(`${API}/api/model/enc/${encodeURIComponent(name)}`, {
-  headers: { Authorization: `Bearer ${token}` }
-});
-if (!manRes.ok) throw new Error('manifest ' + manRes.status);
-const manifest = await manRes.json();
-
-  // (2) Key: ưu tiên key từ session; nếu không có, thử lấy từ manifest.keyB64
-  let keyBytes = SESSION_KEY_BYTES;
-  if (!keyBytes && manifest.keyB64) {
-    try { keyBytes = b64ToBytes(manifest.keyB64); }
-    catch (e) { throw new Error('Bad manifest.keyB64: ' + e.message); }
-  }
-  if (!keyBytes) throw new Error('Missing AES key (no session keyB64/keyHex and no manifest.keyB64)');
-
-  const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
-
-  // (3) IVs: luôn chuẩn hoá qua b64ToBytes (hợp cả base64-url)
-  const ivs = manifest.ivs.map(s => b64ToBytes(s));
-
-    // 2) tải & ghép các chunk
-    const chunks = [];
-    for (let i = 0; i < manifest.ivs.length; i++) {
-      const res = await fetch(`${API}/api/model/enc/${encodeURIComponent(name)}/chunk/${i}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (!res.ok) throw new Error('chunk ' + i + ' ' + res.status);
-      chunks.push(new Uint8Array(await res.arrayBuffer()));
-    }
-    const encWhole = new Uint8Array(chunks.reduce((a, c) => a + c.length, 0));
-    let offset = 0; for (const c of chunks) { encWhole.set(c, offset); offset += c.length; }
-
-    // 3) giải mã AES-GCM
-    const keyBytes = Uint8Array.from(atob(manifest.keyB64), c => c.charCodeAt(0));   // DEMO
-    const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
-
-    const plain = new Uint8Array(manifest.size);
+    // 4) tải & giải mã từng chunk: server trả "ciphertext||tag"
+    const plain = new Uint8Array(totalSize);
     let plainOff = 0;
-    const tagLen = manifest.tagPerChunk || 16;
 
-    for (let i = 0; i < manifest.ivs.length; i++) {
-      const iv = Uint8Array.from(atob(manifest.ivs[i]), c => c.charCodeAt(0));
-      const cipherLen = Math.min(manifest.chunkSize, manifest.size - i * manifest.chunkSize);
-      const chunkSizeOnDisk = cipherLen + tagLen;
-
-      const start = i * (manifest.chunkSize + tagLen);
-      const end = start + chunkSizeOnDisk;
-
-      const ct = encWhole.slice(start, end - tagLen);
-      const tag = encWhole.slice(end - tagLen, end);
-
-      const conc = new Uint8Array(ct.length + tag.length);
-      conc.set(ct, 0); conc.set(tag, ct.length);
-
-      const dec = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, conc));
-      plain.set(dec, plainOff);
+    for(let i=0;i<ivs.length;i++){
+      const r = await fetch(`${API}/api/model/enc/${encodeURIComponent(name)}/chunk/${i}`, {
+        headers:{Authorization:`Bearer ${token}`}
+      });
+      if(!r.ok) throw new Error(`chunk ${i} ${r.status}`);
+      const enc = await r.arrayBuffer();
+      const decBuf = await crypto.subtle.decrypt({name:'AES-GCM', iv:ivs[i]}, cryptoKey, enc);
+      const dec = new Uint8Array(decBuf);
+      const remain = totalSize - plainOff;
+      plain.set(dec.subarray(0, Math.min(dec.length, remain)), plainOff);
       plainOff += dec.length;
     }
-    return new Blob([plain], { type: 'model/gltf-binary' });
+
+    return new Blob([plain], {type:'model/gltf-binary'});
   }
 
-  async function loadEncrypted(name) {
-    try {
-      if (!token) throw new Error('No session');
+  async function loadEncrypted(name){
+    try{
+      if(!token) throw new Error('No session');
       clearObject();
-
       const blob = await decryptToBlob(name);
       const url = URL.createObjectURL(blob);
       const gltf = await loader.loadAsync(url);
       URL.revokeObjectURL(url);
-
       currentObject = gltf.scene;
       scene.add(currentObject);
       fitCameraToObject(currentObject);
-    } catch (e) {
+    }catch(e){
       console.error(e);
       alert('Load failed: ' + e.message);
     }
   }
-  const iv = ivs[i];
-  /* ===== Session + Nav Handlers ===== */
- let SESSION_KEY_BYTES = null;
 
-btnSession.onclick = async () => {
-  const r = await fetch(`${API}/api/session`, { method: 'POST' });
-  if (!r.ok) { alert('Create session failed'); return; }
-  const j = await r.json();
+  /* ===== Session & điều hướng ===== */
+  btnSession.onclick = async () => {
+    const r = await fetch(`${API}/api/session`, {method:'POST'});
+    if(!r.ok){ alert('Create session failed'); return; }
+    const j = await r.json();
 
-  // Lưu token
-  token = j.token || j.accessToken || j.id;
+    token = j.token || j.accessToken || j.id || null;
 
-  // Lấy KEY từ nhiều tên field khác nhau:
-  try {
-    if (j.keyB64) SESSION_KEY_BYTES = b64ToBytes(j.keyB64);
-    else if (j.key) SESSION_KEY_BYTES = b64ToBytes(j.key);       // cũng coi như base64
-    else if (j.keyHex) SESSION_KEY_BYTES = hexToBytes(j.keyHex);
-    // Nếu server không trả key, client sẽ thử đọc từ manifest (bên dưới)
-  } catch (e) {
-    console.warn('Session key parse failed:', e);
-    SESSION_KEY_BYTES = null;
-  }
+    try{
+      if(j.keyB64) SESSION_KEY_BYTES = b64ToBytes(j.keyB64);
+      else if(j.key) SESSION_KEY_BYTES = b64ToBytes(j.key);
+      else if(j.keyHex) SESSION_KEY_BYTES = hexToBytes(j.keyHex);
+      else SESSION_KEY_BYTES = null;
+    }catch(err){
+      console.warn('Session key parse failed:', err);
+      SESSION_KEY_BYTES = null;
+    }
 
-  // Hiển thị hết hạn: thử nhiều tên trường
-  const expMs =
-    (typeof j.exp === 'number' ? j.exp * 1000 : null) ??
-    (typeof j.expires === 'number' ? j.expires : null) ??
-    (j.expiresAt ? Date.parse(j.expiresAt) : null) ??
-    (j.expireAt ? Date.parse(j.expireAt) : null) ??
-    (j.expiration ? Date.parse(j.expiration) : null);
+    const expMs =
+      (typeof j.exp==='number' ? j.exp*1000 : null) ??
+      (typeof j.expires==='number' ? j.expires : null) ??
+      (j.expiresAt ? Date.parse(j.expiresAt) : null) ??
+      (j.expireAt ? Date.parse(j.expireAt) : null) ??
+      (j.expiration ? Date.parse(j.expiration) : null);
 
-  const when = expMs ? new Date(expMs).toLocaleTimeString() : 'unknown';
-  statusEl.textContent = `Session OK (expires ${when})`;
+    const when = expMs ? new Date(expMs).toLocaleTimeString() : 'unknown';
+    statusEl.textContent = `Session OK${expMs ? ` (expires ${when})` : ''}`;
 
-  await refreshModelList();
-};
-
+    await refreshModelList();
+  };
 
   btnLoad.onclick = async () => {
-    const typed = (nameInput?.value || '').trim();
-    const idx = modelNames.findIndex(n => n === typed);
-    if (idx >= 0) currentIdx = idx;
+    const typed=(nameInput?.value||'').trim();
+    const idx=modelNames.findIndex(n=>n===typed);
+    if(idx>=0) currentIdx=idx;
     const target = (sel.value || typed);
-    if (target) await loadEncrypted(target);
+    if(target) await loadEncrypted(target);
     updateNavUI();
   };
 
-  btnPrev.addEventListener('click', () => goTo(currentIdx - 1));
-  btnNext.addEventListener('click', () => goTo(currentIdx + 1));
-  sel.addEventListener('change', () => goTo(sel.selectedIndex));
+  btnPrev.addEventListener('click', ()=>goTo(currentIdx-1));
+  btnNext.addEventListener('click', ()=>goTo(currentIdx+1));
+  sel.addEventListener('change', ()=>goTo(sel.selectedIndex));
 
   /* ===== Auto init ===== */
-  window.addEventListener('DOMContentLoaded', async () => {
-    await btnSession.onclick();          // tạo session & nạp danh sách
-    const q = new URLSearchParams(location.search);
-    const m = q.get('model');
-    if (m) {
-      const idx = modelNames.findIndex(n => n === m);
-      if (idx >= 0) { await goTo(idx); return; }
-      if (nameInput) nameInput.value = m;
+  window.addEventListener('DOMContentLoaded', async ()=>{
+    // tự tạo session để có list
+    await btnSession.onclick();
+    // auto model qua query ?model=...
+    const q=new URLSearchParams(location.search);
+    const m=q.get('model');
+    if(m){
+      const idx=modelNames.findIndex(n=>n===m);
+      if(idx>=0){ await goTo(idx); return; }
+      if(nameInput) nameInput.value=m;
     }
-    if (modelNames.length) await goTo(Math.max(0, currentIdx));
+    if(modelNames.length) await goTo(Math.max(0,currentIdx));
   });
 
   /* ===== render loop ===== */
   (function animate(){
     requestAnimationFrame(animate);
     controls.update();
-    renderer.render(scene, camera);
+    renderer.render(scene,camera);
   })();
 </script>
-
-
 </body>
 </html>
